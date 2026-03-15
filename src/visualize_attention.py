@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 from pathlib import Path
 
+import matplotlib
+
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -16,13 +20,24 @@ from .models.attention_lstm import AttentionBiLSTM
 
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
 
+logger = logging.getLogger(__name__)
+
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Visualise attention for a Stack Overflow question.")
+    parser = argparse.ArgumentParser(
+        description="Visualise attention for a Stack Overflow question."
+    )
     parser.add_argument("--checkpoint", type=str, required=True)
     parser.add_argument("--csv", type=str, default="valid.csv")
-    parser.add_argument("--question_id", type=int, help="Question Id to visualise.")
-    parser.add_argument("--output", type=str, default=None, help="Optional path to save the figure.")
+    parser.add_argument(
+        "--question_id", type=int, help="Question Id to visualise."
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="Optional path to save the figure.",
+    )
     return parser.parse_args()
 
 
@@ -32,9 +47,10 @@ def load_model(checkpoint_path: str, device: torch.device):
     vocab = vocab_mod.Vocabulary.from_itos(ckpt["vocab"])
     model = AttentionBiLSTM(
         len(vocab),
-        embedding_dim=run_config.get("embedding_dim", 200),
+        embedding_dim=run_config.get("embedding_dim", 300),
         hidden_dim=run_config.get("hidden_dim", 128),
         attention_dim=run_config.get("attention_dim", 128),
+        num_layers=run_config.get("num_layers", 2),
         dropout=run_config.get("dropout", 0.3),
         num_labels=len(config.LABELS),
         padding_idx=vocab.pad_index,
@@ -45,6 +61,10 @@ def load_model(checkpoint_path: str, device: torch.device):
 
 
 def main():
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s: %(message)s",
+    )
     args = parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model, vocab, run_config = load_model(args.checkpoint, device)
@@ -52,7 +72,9 @@ def main():
     if args.question_id:
         row = df.loc[df["Id"] == args.question_id]
         if row.empty:
-            raise ValueError(f"Question id {args.question_id} not found in {args.csv}")
+            raise ValueError(
+                f"Question id {args.question_id} not found in {args.csv}"
+            )
         row = row.iloc[0]
     else:
         row = df.sample(1, random_state=42).iloc[0]
@@ -62,14 +84,18 @@ def main():
     encoded = vocab.encode(tokens)
     if not encoded:
         encoded = [vocab.pad_index]
-    tokens_tensor = torch.tensor(encoded, dtype=torch.long).unsqueeze(0).to(device)
+    tokens_tensor = (
+        torch.tensor(encoded, dtype=torch.long).unsqueeze(0).to(device)
+    )
     lengths = torch.tensor([len(encoded)], dtype=torch.long).to(device)
     with torch.no_grad():
         logits, attn = model(tokens_tensor, lengths, return_attention=True)
         probs = torch.softmax(logits, dim=1).cpu().numpy()[0]
         pred_label = config.ID_TO_LABEL[int(probs.argmax())]
         attention = attn.squeeze(0).cpu().numpy()[: len(tokens)]
-    print(f"Question Id: {row['Id']}, true_label={row['Y']}, predicted={pred_label}")
+    print(
+        f"Question Id: {row['Id']}, true_label={row['Y']}, predicted={pred_label}"
+    )
     print("Top attention tokens:")
     token_weights = list(zip(tokens, attention))
     token_weights.sort(key=lambda x: x[1], reverse=True)
@@ -81,9 +107,13 @@ def main():
     ax.set_xticks(range(len(tokens)))
     ax.set_xticklabels(tokens, rotation=90, fontsize=8)
     ax.set_ylabel("Attention weight")
-    ax.set_title(f"Attention over tokens (pred={pred_label}, true={row['Y']})")
+    ax.set_title(
+        f"Attention over tokens (pred={pred_label}, true={row['Y']})"
+    )
     fig.tight_layout()
-    output_path = args.output or (config.PLOTS_DIR / f"attention_{row['Id']}.png")
+    output_path = args.output or (
+        config.PLOTS_DIR / f"attention_{row['Id']}.png"
+    )
     fig.savefig(output_path, dpi=200)
     plt.close(fig)
     print(f"Attention plot saved to {output_path}")
@@ -91,4 +121,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
